@@ -9,7 +9,7 @@ pipeline {
   environment {
     DOCKERHUB_USER = 'qlirimkastrati'
     IMAGE_NAME     = 'qlirimkastrati/jenkins3-nodejs'
-    IMAGE_TAG      = '' // wird unten gesetzt
+    IMAGE_TAG      = '' // wird in "Set TAG" gesetzt
   }
 
   stages {
@@ -22,8 +22,19 @@ pipeline {
     stage('Set TAG') {
       steps {
         script {
-          // Kurz-SHA sauber auslesen (PowerShell, keine bat-Ausgabe-Präfixe)
-          env.IMAGE_TAG = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD)').trim()
+          // 1) Versuch: Jenkins-Umgebungsvariable vom Checkout
+          def sha = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : ''
+
+          // 2) Fallback: direkt mit git (saubere Ausgabe dank @echo off)
+          if (!sha?.trim()) {
+            sha = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
+          }
+
+          if (!sha?.trim()) {
+            error 'Konnte IMAGE_TAG nicht bestimmen (git rev-parse lieferte nichts).'
+          }
+
+          env.IMAGE_TAG = sha
           echo "IMAGE_TAG = ${env.IMAGE_TAG}"
         }
       }
@@ -45,16 +56,16 @@ pipeline {
             $t = $env:DOCKERHUB_TOKEN.Trim()
             if ([string]::IsNullOrWhiteSpace($t)) { throw "Docker token is empty" }
 
-            # Login per PAT
+            # Login via PAT
             $t | docker login -u $u --password-stdin
             if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
 
-            # Pushen
+            # Push
             docker push "$env:IMAGE_NAME:$env:IMAGE_TAG"
-            if ($LASTEXITCODE -ne 0) { throw "docker push tag failed" }
+            if ($LASTEXITCODE -ne 0) { throw "push tag failed" }
 
             docker push "$env:IMAGE_NAME:latest"
-            if ($LASTEXITCODE -ne 0) { throw "docker push latest failed" }
+            if ($LASTEXITCODE -ne 0) { throw "push latest failed" }
           '''
         }
       }
@@ -64,8 +75,7 @@ pipeline {
   post {
     always {
       echo 'Pipeline finished.'
-      // optional aufräumen:
-      powershell 'docker logout' 
+      powershell 'docker logout'  // optional
     }
   }
 }
