@@ -6,13 +6,18 @@ pipeline {
   }
 
   stages {
-    stage('Build Docker Image') {
+    stage('Set TAG') {
       steps {
         script {
-          def shortSha = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD).Trim()').trim()
-          env.IMAGE_TAG = shortSha
-          echo "IMAGE_NAME=${env.IMAGE_NAME}  IMAGE_TAG=${env.IMAGE_TAG}"
+          // Kurzer Commit-Hash als Tag
+          env.IMAGE_TAG = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD).Trim()').trim()
         }
+        echo "IMAGE_TAG = ${env.IMAGE_TAG}"
+      }
+    }
+
+    stage('Build Docker Image') {
+      steps {
         bat 'docker build -t %IMAGE_NAME%:%IMAGE_TAG% -t %IMAGE_NAME%:latest .'
       }
     }
@@ -24,28 +29,36 @@ pipeline {
           usernameVariable: 'DOCKER_USER',
           passwordVariable: 'DOCKER_PASS'
         )]) {
+          // 1) Auth-Config schreiben (ersetzt docker login)
           powershell '''
-            docker logout 2>$null | Out-Null
+            $cfgDir = "$env:WORKSPACE\\.docker-auth"
+            New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+
             $user = $env:DOCKER_USER
-            $pass = ($env:DOCKER_PASS -replace "`r|`n","")
+            $pass = ($env:DOCKER_PASS -replace "`r|`n","").Trim()
 
-            $pass | docker login -u $user --password-stdin
-            if ($LASTEXITCODE -ne 0) {
-              $pass | docker login -u $user --password-stdin registry-1.docker.io
-              if ($LASTEXITCODE -ne 0) { Write-Error "docker login failed"; exit $LASTEXITCODE }
-            }
+            # base64(user:token)
+            $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$user:$pass"))
 
-            docker push "$env:IMAGE_NAME:$env:IMAGE_TAG" ; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            docker push "$env:IMAGE_NAME:latest"         ; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-            docker logout | Out-Null
+            $json = @{ auths = @{ "https://index.docker.io/v1/" = @{ auth = $auth } } } |
+                    ConvertTo-Json -Compress
+            Set-Content -Path (Join-Path $cfgDir 'config.json') -Value $json -NoNewline
+            Write-Host "Docker auth config written to $cfgDir"
           '''
+
+          // 2) Pushen mit gesetztem DOCKER_CONFIG
+          bat 'set DOCKER_CONFIG=%WORKSPACE%\\.docker-auth && docker push %IMAGE_NAME%:%IMAGE_TAG%'
+          bat 'set DOCKER_CONFIG=%WORKSPACE%\\.docker-auth && docker push %IMAGE_NAME%:latest'
         }
       }
     }
   }
 
   post {
-    always { echo 'Pipeline finished.' }
+    always {
+      // Aufräumen der temporären Auth-Datei
+      bat 'rmdir /S /Q "%WORKSPACE%\\.docker-auth" 2>nul || exit 0'
+      echo 'Pipeline finished.'
+    }
   }
 }
