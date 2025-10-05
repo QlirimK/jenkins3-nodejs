@@ -2,91 +2,79 @@ pipeline {
   agent any
 
   options {
-    skipDefaultCheckout(true)   // wir checken selbst aus
     timestamps()
+    skipDefaultCheckout(true)
   }
 
   environment {
-    DOCKERHUB_USER = 'qlirimkastrati'
-    IMAGE_NAME     = 'qlirimkastrati/jenkins3-nodejs'
-    IMAGE_TAG      = '' // wird in "Set TAG" ermittelt
+    IMAGE_NAME = 'qlirimkastrati/jenkins3-nodejs'
   }
 
   stages {
+
     stage('Checkout') {
       steps {
-        checkout scm
+        git branch: 'main',
+            credentialsId: 'github-token',
+            url: 'https://github.com/QlirimK/jenkins3-nodejs.git'
       }
     }
 
-stage('Set TAG') {
-  steps {
-    script {
-      // Immer im Workspace arbeiten
-      dir(env.WORKSPACE) {
-        // 1) HEAD versuchen
-        def out = bat(returnStatus: true, returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
-        def sha = ''
+    stage('Set TAG') {
+      steps {
+        script {
+          dir(env.WORKSPACE) {
+            // HEAD versuchen
+            def out = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
+            def lines = out.readLines()
+            def sha = lines ? lines[-1].trim() : ''
 
-        if (out && out =~ /[0-9a-fA-F]{7}/) {
-          // letzte Zeile nehmen (Batch schreibt oft das Kommando mit raus)
-          sha = out.readLines().last().trim()
-        } else {
-          // 2) Fallback: FETCH_HEAD (nach checkout vorhanden)
-          def out2 = bat(returnStatus: true, returnStdout: true, script: 'git rev-parse --short=7 FETCH_HEAD').trim()
-          if (out2 && out2 =~ /[0-9a-fA-F]{7}/) {
-            sha = out2.readLines().last().trim()
+            // Fallback auf FETCH_HEAD, falls nötig
+            if (!(sha ==~ /[0-9a-fA-F]{7}/)) {
+              def out2 = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 FETCH_HEAD').trim()
+              def lines2 = out2.readLines()
+              sha = lines2 ? lines2[-1].trim() : ''
+            }
+
+            if (!(sha ==~ /[0-9a-fA-F]{7}/)) {
+              error 'Konnte IMAGE_TAG nicht bestimmen (weder HEAD noch FETCH_HEAD).'
+            }
+
+            env.IMAGE_TAG = sha.toLowerCase()
+            echo "IMAGE_TAG = ${env.IMAGE_TAG}"
           }
         }
-
-        if (!sha) {
-          error 'Konnte IMAGE_TAG nicht bestimmen (weder HEAD noch FETCH_HEAD verfügbar).'
-        }
-
-        env.IMAGE_TAG = sha
-        echo "IMAGE_TAG = ${env.IMAGE_TAG}"
       }
     }
-  }
-}
-
-
 
     stage('Build Docker Image') {
       steps {
-        bat 'docker --version'
-        bat 'docker build -t %IMAGE_NAME%:%IMAGE_TAG% -t %IMAGE_NAME%:latest .'
+        // Windows: env-Variablen in Groovy-String sind ok
+        bat "docker --version"
+        bat "docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} -t ${env.IMAGE_NAME}:latest ."
       }
     }
 
     stage('Push to Docker Hub') {
       steps {
-        withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKERHUB_TOKEN')]) {
+        withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKER_PAT')]) {
           powershell '''
             $ErrorActionPreference = "Stop"
+            try {
+              docker logout 2>$null | Out-Null
+              $user  = "qlirimkastrati"
+              $token = $env:DOCKER_PAT
+              if ([string]::IsNullOrWhiteSpace($token)) { throw "DOCKER_PAT ist leer" }
 
-            $user = $env:DOCKERHUB_USER
-            $token = $env:DOCKERHUB_TOKEN
-            if ([string]::IsNullOrWhiteSpace($token)) { throw "Docker PAT (dockerhub-pat) ist leer." }
-            $token = $token.Trim()
+              # Login via stdin
+              $token | docker login -u $user --password-stdin
 
-            # Mini-Diagnose ohne Geheimnisse zu leaken:
-            Write-Host ("DockerHub User       = {0}" -f $user)
-            Write-Host ("Token length         = {0}" -f $token.Length)
-            $sha = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($token))).Replace("-","").Substring(0,8).ToLower()
-            Write-Host ("Token FP (sha256/8)  = {0}" -f $sha)
-
-            # Login via stdin (sicher)
-            $token | docker login -u $user --password-stdin
-            if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
-
-            docker push "$env:IMAGE_NAME:$env:IMAGE_TAG"
-            if ($LASTEXITCODE -ne 0) { throw "push tag failed" }
-
-            docker push "$env:IMAGE_NAME:latest"
-            if ($LASTEXITCODE -ne 0) { throw "push latest failed" }
-
-            docker logout | Out-Null
+              docker push "${env:IMAGE_NAME}:${env:IMAGE_TAG}"
+              docker push "${env:IMAGE_NAME}:latest"
+            }
+            finally {
+              docker logout 2>$null | Out-Null
+            }
           '''
         }
       }
@@ -96,8 +84,6 @@ stage('Set TAG') {
   post {
     always {
       echo 'Pipeline finished.'
-      // optionales Aufräumen, schadet nicht:
-      // bat 'docker logout 2>nul || exit 0'
     }
   }
 }
