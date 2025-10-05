@@ -4,13 +4,12 @@ pipeline {
   options {
     skipDefaultCheckout(true)
     timestamps()
-    ansiColor('xterm')
   }
 
   environment {
     DOCKERHUB_USER = 'qlirimkastrati'
     IMAGE_NAME     = 'qlirimkastrati/jenkins3-nodejs'
-    IMAGE_TAG      = '' // wird gleich gesetzt
+    IMAGE_TAG      = '' // wird unten gesetzt
   }
 
   stages {
@@ -23,7 +22,7 @@ pipeline {
     stage('Set TAG') {
       steps {
         script {
-          // saubere Kurz-SHA ermitteln (kein "C:\\...>git ..." Prefix wie bei 'bat')
+          // Kurz-SHA sauber auslesen (PowerShell, keine bat-Ausgabe-Präfixe)
           env.IMAGE_TAG = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD)').trim()
           echo "IMAGE_TAG = ${env.IMAGE_TAG}"
         }
@@ -44,14 +43,13 @@ pipeline {
 
             $u = $env:DOCKERHUB_USER
             $t = $env:DOCKERHUB_TOKEN.Trim()
-
             if ([string]::IsNullOrWhiteSpace($t)) { throw "Docker token is empty" }
 
-            # Login mit PAT
+            # Login per PAT
             $t | docker login -u $u --password-stdin
             if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
 
-            # Push beider Tags
+            # Pushen
             docker push "$env:IMAGE_NAME:$env:IMAGE_TAG"
             if ($LASTEXITCODE -ne 0) { throw "docker push tag failed" }
 
@@ -66,7 +64,8 @@ pipeline {
   post {
     always {
       echo 'Pipeline finished.'
-      powershell 'docker logout' // optional
+      // optional aufräumen:
+      powershell 'docker logout' 
     }
   }
 }
