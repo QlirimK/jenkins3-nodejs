@@ -2,16 +2,18 @@ pipeline {
   agent any
   options {
     timestamps()
-    skipDefaultCheckout(true)
   }
+
   environment {
-    IMAGE_NAME = 'qlirimkastrati/jenkins3-nodejs'
+    DOCKER_USER = 'qlirimkastrati'
+    DOCKER_REPO = 'qlirimkastrati/jenkins3-nodejs'
   }
 
   stages {
     stage('Checkout') {
       steps {
-        git branch: 'main', credentialsId: 'github-token',
+        git branch: 'main',
+            credentialsId: 'github-token',
             url: 'https://github.com/QlirimK/jenkins3-nodejs.git'
       }
     }
@@ -19,13 +21,12 @@ pipeline {
     stage('Set TAG') {
       steps {
         script {
-          def out = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
-          def lines = out.readLines()
-          def sha = lines ? lines[-1].trim() : ''
-          if (!(sha ==~ /[0-9a-fA-F]{7}/)) {
-            error 'Konnte IMAGE_TAG nicht bestimmen.'
+          // Nutze, wenn vorhanden, den Commit aus der SCM-Umgebung; sonst per Git abrufen
+          def shortSha = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : null
+          if (!shortSha) {
+            shortSha = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD).Trim()').trim()
           }
-          env.IMAGE_TAG = sha.toLowerCase()
+          env.IMAGE_TAG = shortSha
           echo "IMAGE_TAG = ${env.IMAGE_TAG}"
         }
       }
@@ -33,54 +34,54 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        bat "docker --version"
-        bat "docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} -t ${env.IMAGE_NAME}:latest ."
+        bat 'docker --version'
+        bat 'docker build -t %DOCKER_REPO%:%IMAGE_TAG% -t %DOCKER_REPO%:latest .'
       }
     }
 
-stage('Push to Docker Hub') {
-  steps {
-    withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKER_PAT')]) {
-      powershell '''
-        $ErrorActionPreference = "Stop"
-        $user = "qlirimkastrati"
+    stage('Push to Docker Hub') {
+      steps {
+        withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKER_PAT')]) {
+          powershell '''
+            $ErrorActionPreference = "Stop"
+            $user = $env:DOCKER_USER
+            if (-not $user) { $user = "qlirimkastrati" }
+            $repo = $env:DOCKER_REPO
+            $tag  = $env:IMAGE_TAG
+            $tok  = $env:DOCKER_PAT
 
-        # --- Debug: Token-Länge + Fingerprint (ohne den Token anzuzeigen)
-        $tok = $env:DOCKER_PAT
-        if ([string]::IsNullOrWhiteSpace($tok)) { throw "DOCKER_PAT ist leer." }
-        $len = $tok.Length
-        $sha = [BitConverter]::ToString(
-                 (New-Object Security.Cryptography.SHA256Managed)
-                 .ComputeHash([Text.Encoding]::UTF8.GetBytes($tok))
-               ).Replace("-","").Substring(0,8)
-        Write-Host ("Using Docker user: {0}" -f $user)
-        Write-Host ("Token length = {0}" -f $len)
-        Write-Host ("Token FP (sha256/8) = {0}" -f $sha)
+            if ([string]::IsNullOrWhiteSpace($tok)) { throw "DOCKER_PAT ist leer." }
+            if ([string]::IsNullOrWhiteSpace($tag)) { throw "IMAGE_TAG ist leer." }
 
-        # Sauberer Zustand
-        docker logout 2>$null | Out-Null
+            # Kurzer, sicherer Debug (kein Secret im Klartext)
+            $len = $tok.Length
+            $shaHex = -join ([System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($tok)) | ForEach-Object { $_.ToString("x2") })
+            Write-Host ("Using Docker user: {0}" -f $user)
+            Write-Host ("Token length = {0}" -f $len)
+            Write-Host ("Token FP (sha256/8) = {0}" -f $shaHex.Substring(0,8))
 
-        # Login per stdin (Best Practice)
-        $tok | docker login -u $user --password-stdin
-        if ($LASTEXITCODE -ne 0) {
-          throw "docker login failed"
+            docker logout 2>$null | Out-Null
+            $tok | docker login -u $user --password-stdin
+            if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
+
+            docker push "$repo:$tag"
+            if ($LASTEXITCODE -ne 0) { throw "docker push (tag) failed" }
+
+            docker push "$repo:latest"
+            if ($LASTEXITCODE -ne 0) { throw "docker push (latest) failed" }
+
+            docker logout 2>$null | Out-Null
+          '''
         }
-
-        # Push beider Tags
-        docker push "qlirimkastrati/jenkins3-nodejs:${env:IMAGE_TAG}"
-        if ($LASTEXITCODE -ne 0) { throw "docker push (tag) failed" }
-
-        docker push "qlirimkastrati/jenkins3-nodejs:latest"
-        if ($LASTEXITCODE -ne 0) { throw "docker push (latest) failed" }
-
-        docker logout 2>$null | Out-Null
-      '''
+      }
     }
-  }
-}
   }
 
   post {
-    always { echo 'Pipeline finished.' }
+    always {
+      echo 'Pipeline finished.'
+      // Logout auch im Fehlerfall versuchen (ohne Build zu failen)
+      bat 'docker logout 1>nul 2>nul || exit 0'
+    }
   }
 }
