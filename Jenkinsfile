@@ -19,32 +19,37 @@ pipeline {
       }
     }
 
-    stage('Set TAG') {
+stage('Set TAG') {
   steps {
     script {
-      // 1) Versuch aus Jenkins-Umgebung
-      def sha = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : ''
+      // Immer im Workspace arbeiten
+      dir(env.WORKSPACE) {
+        // 1) HEAD versuchen
+        def out = bat(returnStatus: true, returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
+        def sha = ''
 
-      // 2) Fallback: sicher über CMD (bat) ermitteln
-      if (!sha?.trim()) {
-        def out = bat(
-          returnStdout: true,
-          label: 'Get short SHA',
-          script: '@echo off\r\nfor /f %%G in (\'git rev-parse --short=7 HEAD\') do @echo %%G'
-        ).trim()
-        def lines = out.readLines()
-        sha = lines ? lines[-1].trim() : ''
+        if (out && out =~ /[0-9a-fA-F]{7}/) {
+          // letzte Zeile nehmen (Batch schreibt oft das Kommando mit raus)
+          sha = out.readLines().last().trim()
+        } else {
+          // 2) Fallback: FETCH_HEAD (nach checkout vorhanden)
+          def out2 = bat(returnStatus: true, returnStdout: true, script: 'git rev-parse --short=7 FETCH_HEAD').trim()
+          if (out2 && out2 =~ /[0-9a-fA-F]{7}/) {
+            sha = out2.readLines().last().trim()
+          }
+        }
+
+        if (!sha) {
+          error 'Konnte IMAGE_TAG nicht bestimmen (weder HEAD noch FETCH_HEAD verfügbar).'
+        }
+
+        env.IMAGE_TAG = sha
+        echo "IMAGE_TAG = ${env.IMAGE_TAG}"
       }
-
-      if (!sha) {
-        error 'Konnte IMAGE_TAG nicht bestimmen (git rev-parse lieferte nichts).'
-      }
-
-      env.IMAGE_TAG = sha
-      echo "IMAGE_TAG = ${env.IMAGE_TAG}"
     }
   }
 }
+
 
 
     stage('Build Docker Image') {
