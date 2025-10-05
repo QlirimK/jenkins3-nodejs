@@ -39,34 +39,36 @@ pipeline {
     }
 
     stage('Push to Docker Hub') {
-      steps {
-        withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKER_PAT')]) {
-          powershell '''
-            $ErrorActionPreference = "Stop"
-            docker logout 2>$null | Out-Null
+  steps {
+    withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKER_PAT')]) {
+      powershell '''
+        $ErrorActionPreference = "Stop"
 
-            $user  = "qlirimkastrati"
-            $token = $env:DOCKER_PAT
-            if ([string]::IsNullOrWhiteSpace($token)) { throw "DOCKER_PAT ist leer." }
+        # Login: Token per stdin übergeben (funktioniert auf deinem Agent)
+        docker logout 2>$null | Out-Null
+        $user = "qlirimkastrati"
+        if ([string]::IsNullOrWhiteSpace($env:DOCKER_PAT)) { throw "DOCKER_PAT ist leer." }
 
-            # Login via stdin + Exitcode hart prüfen
-            $p = Start-Process -FilePath "docker" -ArgumentList @("login","-u",$user,"--password-stdin") `
-                 -NoNewWindow -PassThru -RedirectStandardInput Pipe -Wait
-            $p.StandardInput.WriteLine($token)
-            $p.StandardInput.Close()
-            if ($p.ExitCode -ne 0) { throw "docker login failed (ExitCode=$($p.ExitCode))" }
+        Write-Output $env:DOCKER_PAT | docker login -u $user --password-stdin
+        if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
 
-            docker push "${env:IMAGE_NAME}:${env:IMAGE_TAG}"
-            if ($LASTEXITCODE -ne 0) { throw "docker push tag failed" }
+        # Falls du oben environment { IMAGE_NAME='qlirimkastrati/jenkins3-nodejs' } gesetzt hast:
+        # docker push "$env:IMAGE_NAME:$env:IMAGE_TAG"
+        # docker push "$env:IMAGE_NAME:latest"
 
-            docker push "${env:IMAGE_NAME}:latest"
-            if ($LASTEXITCODE -ne 0) { throw "docker push latest failed" }
+        # Oder – wie in deinem Build – direkt mit Literal:
+        docker push "qlirimkastrati/jenkins3-nodejs:${env:IMAGE_TAG}"
+        if ($LASTEXITCODE -ne 0) { throw "docker push (tag) failed" }
 
-            docker logout 2>$null | Out-Null
-          '''
-        }
-      }
+        docker push "qlirimkastrati/jenkins3-nodejs:latest"
+        if ($LASTEXITCODE -ne 0) { throw "docker push (latest) failed" }
+
+        docker logout 2>$null | Out-Null
+      '''
     }
+  }
+}
+
   }
 
   post {
