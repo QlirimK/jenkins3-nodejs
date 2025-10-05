@@ -1,15 +1,17 @@
 pipeline {
   agent any
+
   options {
     timestamps()
+    skipDefaultCheckout(true)
   }
 
   environment {
-    DOCKER_USER = 'qlirimkastrati'
-    DOCKER_REPO = 'qlirimkastrati/jenkins3-nodejs'
+    IMAGE_NAME = 'qlirimkastrati/jenkins3-nodejs'
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         git branch: 'main',
@@ -21,21 +23,35 @@ pipeline {
     stage('Set TAG') {
       steps {
         script {
-          // Nutze, wenn vorhanden, den Commit aus der SCM-Umgebung; sonst per Git abrufen
-          def shortSha = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : null
-          if (!shortSha) {
-            shortSha = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD).Trim()').trim()
+          dir(env.WORKSPACE) {
+            // HEAD versuchen
+            def out = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 HEAD').trim()
+            def lines = out.readLines()
+            def sha = lines ? lines[-1].trim() : ''
+
+            // Fallback auf FETCH_HEAD, falls nötig
+            if (!(sha ==~ /[0-9a-fA-F]{7}/)) {
+              def out2 = bat(returnStdout: true, script: '@echo off\r\ngit rev-parse --short=7 FETCH_HEAD').trim()
+              def lines2 = out2.readLines()
+              sha = lines2 ? lines2[-1].trim() : ''
+            }
+
+            if (!(sha ==~ /[0-9a-fA-F]{7}/)) {
+              error 'Konnte IMAGE_TAG nicht bestimmen (weder HEAD noch FETCH_HEAD).'
+            }
+
+            env.IMAGE_TAG = sha.toLowerCase()
+            echo "IMAGE_TAG = ${env.IMAGE_TAG}"
           }
-          env.IMAGE_TAG = shortSha
-          echo "IMAGE_TAG = ${env.IMAGE_TAG}"
         }
       }
     }
 
     stage('Build Docker Image') {
       steps {
-        bat 'docker --version'
-        bat 'docker build -t %DOCKER_REPO%:%IMAGE_TAG% -t %DOCKER_REPO%:latest .'
+        // Windows: env-Variablen in Groovy-String sind ok
+        bat "docker --version"
+        bat "docker build -t ${env.IMAGE_NAME}:${env.IMAGE_TAG} -t ${env.IMAGE_NAME}:latest ."
       }
     }
 
@@ -44,33 +60,21 @@ pipeline {
         withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKER_PAT')]) {
           powershell '''
             $ErrorActionPreference = "Stop"
-            $user = $env:DOCKER_USER
-            if (-not $user) { $user = "qlirimkastrati" }
-            $repo = $env:DOCKER_REPO
-            $tag  = $env:IMAGE_TAG
-            $tok  = $env:DOCKER_PAT
+            try {
+              docker logout 2>$null | Out-Null
+              $user  = "qlirimkastrati"
+              $token = $env:DOCKER_PAT
+              if ([string]::IsNullOrWhiteSpace($token)) { throw "DOCKER_PAT ist leer" }
 
-            if ([string]::IsNullOrWhiteSpace($tok)) { throw "DOCKER_PAT ist leer." }
-            if ([string]::IsNullOrWhiteSpace($tag)) { throw "IMAGE_TAG ist leer." }
+              # Login via stdin
+              $token | docker login -u $user --password-stdin
 
-            # Kurzer, sicherer Debug (kein Secret im Klartext)
-            $len = $tok.Length
-            $shaHex = -join ([System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($tok)) | ForEach-Object { $_.ToString("x2") })
-            Write-Host ("Using Docker user: {0}" -f $user)
-            Write-Host ("Token length = {0}" -f $len)
-            Write-Host ("Token FP (sha256/8) = {0}" -f $shaHex.Substring(0,8))
-
-            docker logout 2>$null | Out-Null
-            $tok | docker login -u $user --password-stdin
-            if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
-
-            docker push "$repo:$tag"
-            if ($LASTEXITCODE -ne 0) { throw "docker push (tag) failed" }
-
-            docker push "$repo:latest"
-            if ($LASTEXITCODE -ne 0) { throw "docker push (latest) failed" }
-
-            docker logout 2>$null | Out-Null
+              docker push "${env:IMAGE_NAME}:${env:IMAGE_TAG}"
+              docker push "${env:IMAGE_NAME}:latest"
+            }
+            finally {
+              docker logout 2>$null | Out-Null
+            }
           '''
         }
       }
@@ -80,8 +84,6 @@ pipeline {
   post {
     always {
       echo 'Pipeline finished.'
-      // Logout auch im Fehlerfall versuchen (ohne Build zu failen)
-      bat 'docker logout 1>nul 2>nul || exit 0'
     }
   }
 }
