@@ -38,25 +38,35 @@ pipeline {
       }
     }
 
-    stage('Push to Docker Hub') {
+stage('Push to Docker Hub') {
   steps {
     withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKER_PAT')]) {
       powershell '''
         $ErrorActionPreference = "Stop"
-
-        # Login: Token per stdin übergeben (funktioniert auf deinem Agent)
-        docker logout 2>$null | Out-Null
         $user = "qlirimkastrati"
-        if ([string]::IsNullOrWhiteSpace($env:DOCKER_PAT)) { throw "DOCKER_PAT ist leer." }
 
-        Write-Output $env:DOCKER_PAT | docker login -u $user --password-stdin
-        if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
+        # --- Debug: Token-Länge + Fingerprint (ohne den Token anzuzeigen)
+        $tok = $env:DOCKER_PAT
+        if ([string]::IsNullOrWhiteSpace($tok)) { throw "DOCKER_PAT ist leer." }
+        $len = $tok.Length
+        $sha = [BitConverter]::ToString(
+                 (New-Object Security.Cryptography.SHA256Managed)
+                 .ComputeHash([Text.Encoding]::UTF8.GetBytes($tok))
+               ).Replace("-","").Substring(0,8)
+        Write-Host ("Using Docker user: {0}" -f $user)
+        Write-Host ("Token length = {0}" -f $len)
+        Write-Host ("Token FP (sha256/8) = {0}" -f $sha)
 
-        # Falls du oben environment { IMAGE_NAME='qlirimkastrati/jenkins3-nodejs' } gesetzt hast:
-        # docker push "$env:IMAGE_NAME:$env:IMAGE_TAG"
-        # docker push "$env:IMAGE_NAME:latest"
+        # Sauberer Zustand
+        docker logout 2>$null | Out-Null
 
-        # Oder – wie in deinem Build – direkt mit Literal:
+        # Login per stdin (Best Practice)
+        $tok | docker login -u $user --password-stdin
+        if ($LASTEXITCODE -ne 0) {
+          throw "docker login failed"
+        }
+
+        # Push beider Tags
         docker push "qlirimkastrati/jenkins3-nodejs:${env:IMAGE_TAG}"
         if ($LASTEXITCODE -ne 0) { throw "docker push (tag) failed" }
 
@@ -68,7 +78,6 @@ pipeline {
     }
   }
 }
-
   }
 
   post {
