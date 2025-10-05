@@ -7,16 +7,16 @@ pipeline {
 
   stages {
     stage('Checkout') {
-      steps {
-        checkout scm
-      }
+      steps { checkout scm }
     }
 
     stage('Set TAG') {
       steps {
         script {
-          // kurze Commit-ID holen (Windows)
-          env.IMAGE_TAG = bat(script: 'git rev-parse --short=7 HEAD', returnStdout: true).trim()
+          env.IMAGE_TAG = powershell(
+            script: '(git rev-parse --short=7 HEAD).Trim()',
+            returnStdout: true
+          ).trim()
           echo "IMAGE_TAG = ${env.IMAGE_TAG}"
         }
       }
@@ -24,7 +24,6 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        // auf Windows bekommen bat-Schritte %VARS%
         bat 'docker build -t %IMAGE_NAME%:%IMAGE_TAG% -t %IMAGE_NAME%:latest .'
       }
     }
@@ -32,13 +31,10 @@ pipeline {
     stage('Push to Docker Hub') {
       steps {
         withCredentials([string(credentialsId: 'dockerhub-pat', variable: 'DOCKERHUB_TOKEN')]) {
-          // PowerShell, weil wir stdin sauber pipen wollen
           powershell '''
             $ErrorActionPreference = "Stop"
-
             $u = "qlirimkastrati"
-            $t = $env:DOCKERHUB_TOKEN.Trim()   # CR/LF/Spaces entfernen
-
+            $t = $env:DOCKERHUB_TOKEN.Trim()
             if ([string]::IsNullOrWhiteSpace($t)) { throw "Docker token is empty" }
 
             $t | docker login -u $u --password-stdin
@@ -56,8 +52,6 @@ pipeline {
   }
 
   post {
-    always {
-      echo 'Pipeline finished.'
-    }
+    always { echo 'Pipeline finished.' }
   }
 }
