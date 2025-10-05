@@ -9,10 +9,10 @@ pipeline {
     stage('Set TAG') {
       steps {
         script {
-          // Kurzer Commit-Hash als Tag
-          env.IMAGE_TAG = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD).Trim()').trim()
+          // kurze Commit-ID als Tag
+          env.IMAGE_TAG = bat(script: 'git rev-parse --short=7 HEAD', returnStdout: true).trim()
+          echo "IMAGE_TAG = ${env.IMAGE_TAG}"
         }
-        echo "IMAGE_TAG = ${env.IMAGE_TAG}"
       }
     }
 
@@ -29,26 +29,19 @@ pipeline {
           usernameVariable: 'DOCKER_USER',
           passwordVariable: 'DOCKER_PASS'
         )]) {
-          // 1) Auth-Config schreiben (ersetzt docker login)
           powershell '''
-            $cfgDir = "$env:WORKSPACE\\.docker-auth"
-            New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+            $ErrorActionPreference = "Stop"
 
-            $user = $env:DOCKER_USER
-            $pass = ($env:DOCKER_PASS -replace "`r|`n","").Trim()
+            Write-Host ("Login as: {0}" -f $env:DOCKER_USER)
+            $env:DOCKER_PASS | docker login -u $env:DOCKER_USER --password-stdin
+            if ($LASTEXITCODE -ne 0) { throw "docker login failed" }
 
-            # base64(user:token)
-            $auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$user:$pass"))
+            docker push $env:IMAGE_NAME:$env:IMAGE_TAG
+            if ($LASTEXITCODE -ne 0) { throw "docker push tag failed" }
 
-            $json = @{ auths = @{ "https://index.docker.io/v1/" = @{ auth = $auth } } } |
-                    ConvertTo-Json -Compress
-            Set-Content -Path (Join-Path $cfgDir 'config.json') -Value $json -NoNewline
-            Write-Host "Docker auth config written to $cfgDir"
+            docker push $env:IMAGE_NAME:latest
+            if ($LASTEXITCODE -ne 0) { throw "docker push latest failed" }
           '''
-
-          // 2) Pushen mit gesetztem DOCKER_CONFIG
-          bat 'set DOCKER_CONFIG=%WORKSPACE%\\.docker-auth && docker push %IMAGE_NAME%:%IMAGE_TAG%'
-          bat 'set DOCKER_CONFIG=%WORKSPACE%\\.docker-auth && docker push %IMAGE_NAME%:latest'
         }
       }
     }
@@ -56,8 +49,6 @@ pipeline {
 
   post {
     always {
-      // Aufräumen der temporären Auth-Datei
-      bat 'rmdir /S /Q "%WORKSPACE%\\.docker-auth" 2>nul || exit 0'
       echo 'Pipeline finished.'
     }
   }
