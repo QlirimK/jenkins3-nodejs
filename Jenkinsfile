@@ -26,28 +26,31 @@ pipeline {
     }
 
     stage('Push to Docker Hub') {
-      steps {
-        withCredentials([string(credentialsId: 'dockerhub-token', variable: 'DOCKER_PASS')]) {
-          powershell '''
-            docker logout 2>$null | Out-Null
-            $user = "qlirimkastrati"
-            $pass = ($env:DOCKER_PASS -replace "`r|`n","")  # CR/LF sicher entfernen
-            Write-Host "Using Docker user: $user"
+  steps {
+    withCredentials([usernamePassword(
+        credentialsId: 'dockerhub-token',
+        usernameVariable: 'DOCKER_USER',
+        passwordVariable: 'DOCKER_PASS'
+    )]) {
+      powershell '''
+        docker logout 2>$null | Out-Null
+        $user = $env:DOCKER_USER
+        $pass = ($env:DOCKER_PASS -replace "`r|`n","")  # CR/LF sicher entfernen
+        Write-Host "Using Docker user: $user"
 
-            $pass | docker login -u $user --password-stdin
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "login default registry failed, try registry-1 ..."
-              $pass | docker login -u $user --password-stdin registry-1.docker.io
-              if ($LASTEXITCODE -ne 0) { Write-Error "docker login failed"; exit $LASTEXITCODE }
-            }
-
-            docker push "$env:IMAGE_NAME:$env:IMAGE_TAG" ; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            docker push "$env:IMAGE_NAME:latest"         ; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-            docker logout | Out-Null
-          '''
+        $pass | docker login -u $user --password-stdin
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "login default registry failed, try registry-1 ..."
+          $pass | docker login -u $user --password-stdin registry-1.docker.io
+          if ($LASTEXITCODE -ne 0) { Write-Error "docker login failed"; exit $LASTEXITCODE }
         }
-      }
+
+        docker push "$env:IMAGE_NAME:$env:IMAGE_TAG" ; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        docker push "$env:IMAGE_NAME:latest"         ; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        docker logout | Out-Null
+      '''
     }
   }
 }
+
