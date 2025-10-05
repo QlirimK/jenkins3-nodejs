@@ -20,25 +20,32 @@ pipeline {
     }
 
     stage('Set TAG') {
-      steps {
-        script {
-          // 1) Versuche aus Jenkins-Env (kommt vom "Declarative: Checkout SCM")
-          def sha = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : ''
+  steps {
+    script {
+      // 1) Versuch aus Jenkins-Umgebung
+      def sha = env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : ''
 
-          // 2) Fallback: direkt via git (PowerShell, Windows)
-          if (!sha?.trim()) {
-            sha = powershell(returnStdout: true, script: '(git rev-parse --short=7 HEAD).Trim()').trim()
-          }
-
-          if (!sha?.trim()) {
-            error 'Konnte IMAGE_TAG nicht bestimmen (git rev-parse lieferte nichts).'
-          }
-
-          env.IMAGE_TAG = sha
-          echo "IMAGE_TAG = ${env.IMAGE_TAG}"
-        }
+      // 2) Fallback: sicher über CMD (bat) ermitteln
+      if (!sha?.trim()) {
+        def out = bat(
+          returnStdout: true,
+          label: 'Get short SHA',
+          script: '@echo off\r\nfor /f %%G in (\'git rev-parse --short=7 HEAD\') do @echo %%G'
+        ).trim()
+        def lines = out.readLines()
+        sha = lines ? lines[-1].trim() : ''
       }
+
+      if (!sha) {
+        error 'Konnte IMAGE_TAG nicht bestimmen (git rev-parse lieferte nichts).'
+      }
+
+      env.IMAGE_TAG = sha
+      echo "IMAGE_TAG = ${env.IMAGE_TAG}"
     }
+  }
+}
+
 
     stage('Build Docker Image') {
       steps {
